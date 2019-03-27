@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2014 David Irvine
 #
 # This file is part of MQTT2RRD
@@ -16,13 +16,13 @@
 # You should have received a copy of the GNU General Public License
 # along with MQTT2RRD.  If not, see "http://www.gnu.org/licenses/".
 #
-import sys, os, argparse, atexit, time, logging, ConfigParser, grp, pwd, getpass, json
+import sys, os, argparse, atexit, time, logging, configparser, grp, pwd, getpass, json
 from signal import SIGTERM
-import mosquitto, rrdtool
+import paho.mqtt.client as paho, rrdtool
 
 logger=logging.getLogger("MQTT2RRD")
 
-config = ConfigParser.RawConfigParser()
+config = configparser.RawConfigParser()
 
 
 def get_config_item(section, name, default):
@@ -47,6 +47,12 @@ def extract_float(pl):
 
     try:
         return float(pl.split(" ")[0])
+    except ValueError:
+        pass
+
+    try:
+        # json decode of xPL 'current' field
+        return float(json.loads(pl)['current'])
     except ValueError:
         pass
 
@@ -91,10 +97,10 @@ def run(args):
     while(True):
         try:
             logger.debug("Entering Loop")
-            client = mosquitto.Mosquitto(get_config_item("mqtt", "client_id", "MQTT2RRD Client"))
+            client = paho.Client(get_config_item("mqtt", "client_id", "MQTT2RRD Client"))
             client.on_message = on_message
             client.on_connect = on_connect
-
+            
             if get_config_item("mqtt", "username", None):
                 client.username_pw_set(
                     get_config_item("mqtt", "username", ""),
@@ -118,7 +124,7 @@ def run(args):
 # MQTT Callback handlers
 #
 ####
-def on_connect(client, userdata, rc):
+def on_connect(client, userdata, flags, rc):
     logger.info("Connected to server.")
     subs = get_config_item("mqtt", "subscriptions", "#")
     for i in subs.split(","):
@@ -129,9 +135,15 @@ def on_connect(client, userdata, rc):
 def on_message(mosq, obj, msg):
     logger.debug("Message received on topic: %s with payload: %s." % (msg.topic, msg.payload))
 
-    pl = extract_float(msg.payload)
+    try:
+        temp = msg.payload.decode("utf-8").split(" ")
+        logger.debug("Message received with parts %s and %s." % (temp[0], temp[1]))
+    except:
+        logger.debug("Unexpected error:", sys.exc_info()[0]) 
+    
+    pl = extract_float(temp[1])
     if pl == None:
-        logger.debug("Unable to get float from payload: %s" % msg.payload)
+        logger.debug("Unable to get float from payload: %s" % temp[1])
         return
 
     logger.info("Message received on topic " + msg.topic + " with QoS " + str(
@@ -228,7 +240,7 @@ class Daemon:
             if pid > 0:
                 # exit first parent
                 sys.exit(0)
-        except OSError, e:
+        except OSError as e:
             sys.stderr.write("fork #1 failed: %d (%s)\n" % (e.errno, e.strerror))
             sys.exit(1)
 
@@ -243,16 +255,16 @@ class Daemon:
             if pid > 0:
                 # exit from second parent
                 sys.exit(0)
-        except OSError, e:
+        except OSError as e:
             sys.stderr.write("fork #2 failed: %d (%s)\n" % (e.errno, e.strerror))
             sys.exit(1)
 
         # redirect standard file descriptors
         sys.stdout.flush()
         sys.stderr.flush()
-        si = file(self.stdin, 'r')
-        so = file(self.stdout, 'a+')
-        se = file(self.stderr, 'a+', 0)
+        si = open(self.stdin, 'r')
+        so = open(self.stdout, 'a+')
+        se = open(self.stderr, 'a+')
         os.dup2(si.fileno(), sys.stdin.fileno())
         os.dup2(so.fileno(), sys.stdout.fileno())
         os.dup2(se.fileno(), sys.stderr.fileno())
@@ -260,7 +272,7 @@ class Daemon:
         # write pidfile
         atexit.register(self.delpid)
         pid = str(os.getpid())
-        file(self.pidfile, 'w+').write("%s\n" % pid)
+        open(self.pidfile, 'w+').write("%s\n" % pid)
 
     def delpid(self):
         os.remove(self.pidfile)
@@ -271,7 +283,7 @@ class Daemon:
         """
         # Check for a pidfile to see if the daemon already runs
         try:
-            pf = file(self.pidfile, 'r')
+            pf = open(self.pidfile, 'r')
             pid = int(pf.read().strip())
             pf.close()
         except IOError:
@@ -293,7 +305,7 @@ class Daemon:
         """
         # Get the pid from the pidfile
         try:
-            pf = file(self.pidfile, 'r')
+            pf = open(self.pidfile, 'r')
             pid = int(pf.read().strip())
             pf.close()
         except IOError:
@@ -309,7 +321,7 @@ class Daemon:
             while 1:
                 os.kill(pid, SIGTERM)
                 time.sleep(0.1)
-        except OSError, err:
+        except OSError as err:
             err = str(err)
             if err.find("No such process") > 0:
                 if os.path.exists(self.pidfile):
